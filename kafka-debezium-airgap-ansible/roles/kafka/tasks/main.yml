@@ -1,0 +1,271 @@
+---
+- name: Déterminer l'identifiant KRaft du nœud
+  ansible.builtin.set_fact:
+    kafka_node_id: "{{ (groups['kafka'] | sort).index(inventory_hostname) + 1 }}"
+
+- name: Créer le groupe Kafka
+  ansible.builtin.group:
+    name: "{{ kafka_service_group }}"
+    system: true
+
+- name: Créer l'utilisateur Kafka
+  ansible.builtin.user:
+    name: "{{ kafka_service_user }}"
+    group: "{{ kafka_service_group }}"
+    system: true
+    shell: /sbin/nologin
+    home: "{{ kafka_data_dir }}"
+    create_home: false
+
+- name: Créer les répertoires Kafka
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(kafka_service_user) }}"
+    group: "{{ item.group | default(kafka_service_group) }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ kafka_install_dir }}", owner: root, group: root, mode: "0755"}
+    - {path: "{{ kafka_config_dir }}", owner: root, group: "{{ kafka_service_group }}", mode: "0750"}
+    - {path: "{{ kafka_pki_dir }}", owner: root, group: "{{ kafka_service_group }}", mode: "0750"}
+    - {path: "{{ kafka_data_dir }}", mode: "0750"}
+    - {path: "{{ kafka_metadata_dir }}", mode: "0750"}
+    - {path: "{{ kafka_log_dir }}", mode: "0750"}
+    - {path: "{{ jmx_exporter_install_dir }}", owner: root, group: root, mode: "0755"}
+
+- name: Installer Kafka depuis le bundle air-gap
+  ansible.builtin.unarchive:
+    src: "{{ airgap_bundle_dir }}/artifacts/kafka/kafka_{{ kafka_scala_version }}-{{ kafka_version }}.tgz"
+    dest: "{{ kafka_install_dir }}"
+    remote_src: false
+    extra_opts:
+      - --strip-components=1
+    creates: "{{ kafka_install_dir }}/bin/kafka-server-start.sh"
+  notify: Redémarrer kafka
+
+- name: Installer l'agent JMX Exporter
+  ansible.builtin.copy:
+    src: "{{ airgap_bundle_dir }}/artifacts/monitoring/jmx_prometheus_javaagent-{{ jmx_exporter_version }}.jar"
+    dest: "{{ jmx_exporter_install_dir }}/jmx_prometheus_javaagent-{{ jmx_exporter_version }}.jar"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Redémarrer kafka
+
+- name: Installer le certificat de l'autorité
+  ansible.builtin.copy:
+    src: "{{ stack_state_dir }}/pki/ca/ca.crt"
+    dest: "{{ kafka_pki_dir }}/ca.crt"
+    owner: root
+    group: "{{ kafka_service_group }}"
+    mode: "0640"
+  notify: Redémarrer kafka
+  register: kafka_ca_certificate
+
+- name: Supprimer le truststore si l'autorité a changé  # noqa no-handler
+  ansible.builtin.file:
+    path: "{{ kafka_pki_dir }}/truststore.p12"
+    state: absent
+  when: kafka_ca_certificate.changed
+
+- name: Détecter un truststore Kafka existant
+  ansible.builtin.stat:
+    path: "{{ kafka_pki_dir }}/truststore.p12"
+  register: kafka_truststore_file
+
+- name: Valider le truststore Kafka existant
+  ansible.builtin.command:
+    argv:
+      - "{{ java21_home }}/bin/keytool"
+      - -list
+      - -alias
+      - cdc-stack-ca
+      - -keystore
+      - "{{ kafka_pki_dir }}/truststore.p12"
+      - -storetype
+      - PKCS12
+      - -storepass
+      - "{{ hostvars['localhost'].kafka_truststore_password }}"
+  register: kafka_truststore_check
+  changed_when: false
+  failed_when: false
+  when: kafka_truststore_file.stat.exists
+  no_log: true
+
+- name: Supprimer un truststore Kafka invalide
+  ansible.builtin.file:
+    path: "{{ kafka_pki_dir }}/truststore.p12"
+    state: absent
+  when:
+    - kafka_truststore_file.stat.exists
+    - kafka_truststore_check.rc != 0
+
+- name: Installer le keystore du broker
+  ansible.builtin.copy:
+    src: "{{ stack_state_dir }}/pki/identities/{{ inventory_hostname }}/keystore.p12"
+    dest: "{{ kafka_pki_dir }}/keystore.p12"
+    owner: root
+    group: "{{ kafka_service_group }}"
+    mode: "0640"
+  notify: Redémarrer kafka
+
+- name: Créer le truststore du broker
+  ansible.builtin.command:
+    argv:
+      - "{{ java21_home }}/bin/keytool"
+      - -importcert
+      - -noprompt
+      - -alias
+      - cdc-stack-ca
+      - -file
+      - "{{ kafka_pki_dir }}/ca.crt"
+      - -keystore
+      - "{{ kafka_pki_dir }}/truststore.p12"
+      - -storetype
+      - PKCS12
+      - -storepass
+      - "{{ hostvars['localhost'].kafka_truststore_password }}"
+  args:
+    creates: "{{ kafka_pki_dir }}/truststore.p12"
+  no_log: true
+  notify: Redémarrer kafka
+
+- name: Protéger le truststore du broker
+  ansible.builtin.file:
+    path: "{{ kafka_pki_dir }}/truststore.p12"
+    owner: root
+    group: "{{ kafka_service_group }}"
+    mode: "0640"
+
+- name: Configurer Kafka KRaft
+  ansible.builtin.template:
+    src: server.properties.j2
+    dest: "{{ kafka_config_dir }}/server.properties"
+    owner: root
+    group: "{{ kafka_service_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Redémarrer kafka
+
+- name: Configurer le client d'administration local
+  ansible.builtin.template:
+    src: broker-client.properties.j2
+    dest: "{{ kafka_config_dir }}/broker-client.properties"
+    owner: root
+    group: "{{ kafka_service_group }}"
+    mode: "0640"
+  no_log: true
+
+- name: Configurer l'export JMX Kafka
+  ansible.builtin.template:
+    src: kafka-jmx-exporter.yml.j2
+    dest: "{{ kafka_config_dir }}/jmx-exporter.yml"
+    owner: root
+    group: "{{ kafka_service_group }}"
+    mode: "0644"
+  notify: Redémarrer kafka
+
+- name: Configurer la journalisation Kafka
+  ansible.builtin.template:
+    src: log4j2.yaml.j2
+    dest: "{{ kafka_config_dir }}/log4j2.yaml"
+    owner: root
+    group: "{{ kafka_service_group }}"
+    mode: "0644"
+  notify: Redémarrer kafka
+
+- name: Installer le service systemd Kafka
+  ansible.builtin.template:
+    src: kafka.service.j2
+    dest: /etc/systemd/system/kafka.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Recharger systemd
+    - Redémarrer kafka
+
+- name: Détecter un stockage KRaft déjà formaté
+  ansible.builtin.stat:
+    path: "{{ kafka_metadata_dir }}/meta.properties"
+  register: kraft_metadata
+
+- name: Lire les métadonnées KRaft existantes
+  ansible.builtin.slurp:
+    src: "{{ kafka_metadata_dir }}/meta.properties"
+  register: kafka_existing_metadata
+  when: kraft_metadata.stat.exists
+
+- name: Refuser un cluster ID ou node ID incohérent
+  ansible.builtin.assert:
+    that:
+      - (kafka_existing_metadata.content | b64decode) is search('(?m)^cluster.id=' ~ hostvars['localhost'].kraft_cluster_id ~ '$')
+      - (kafka_existing_metadata.content | b64decode) is search('(?m)^node.id=' ~ (kafka_node_id | string) ~ '$')
+    fail_msg: >-
+      meta.properties ne correspond pas au cluster ID conservé dans .state ou au node.id
+      calculé. N'effacez pas les données : restaurez le bon .state ou corrigez l'inventaire.
+  when: kraft_metadata.stat.exists
+
+- name: Formater le stockage KRaft une seule fois
+  ansible.builtin.command:
+    argv:
+      - "{{ kafka_install_dir }}/bin/kafka-storage.sh"
+      - format
+      - --cluster-id
+      - "{{ hostvars['localhost'].kraft_cluster_id }}"
+      - --config
+      - "{{ kafka_config_dir }}/server.properties"
+  become_user: "{{ kafka_service_user }}"
+  become: true
+  environment:
+    JAVA_HOME: "{{ java21_home }}"
+    PATH: "{{ java21_home }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+  when: not kraft_metadata.stat.exists
+  changed_when: true
+  no_log: true
+  notify: Redémarrer kafka
+
+- name: Autoriser le trafic client Kafka
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - "--add-rich-rule=rule family=ipv4 source address={{ item }} port port={{ kafka_client_port }} protocol=tcp accept"
+  loop: "{{ kafka_client_allowed_cidrs | unique }}"
+  register: kafka_client_firewall
+  changed_when: "'ALREADY_ENABLED' not in (kafka_client_firewall.stdout ~ kafka_client_firewall.stderr)"
+  notify: Recharger firewalld
+  when: manage_firewalld | bool
+
+- name: Autoriser le quorum KRaft entre brokers
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - "--add-rich-rule=rule family=ipv4 source address={{ hostvars[item].ansible_host }}/32 port port={{ kafka_controller_port }} protocol=tcp accept"
+  loop: "{{ groups['kafka'] }}"
+  register: kafka_controller_firewall
+  changed_when: "'ALREADY_ENABLED' not in (kafka_controller_firewall.stdout ~ kafka_controller_firewall.stderr)"
+  notify: Recharger firewalld
+  when: manage_firewalld | bool
+
+- name: Autoriser le scraping JMX Kafka
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - "--add-rich-rule=rule family=ipv4 source address={{ hostvars[groups['monitoring'][0]].ansible_host }}/32 port port={{ kafka_jmx_exporter_port }} protocol=tcp accept"
+  register: kafka_jmx_firewall
+  changed_when: "'ALREADY_ENABLED' not in (kafka_jmx_firewall.stdout ~ kafka_jmx_firewall.stderr)"
+  notify: Recharger firewalld
+  when: manage_firewalld | bool
+
+- name: Appliquer les handlers avant le contrôle de disponibilité
+  ansible.builtin.meta: flush_handlers
+
+- name: Activer le service Kafka
+  ansible.builtin.systemd:
+    name: kafka
+    enabled: true
+    state: started
+    daemon_reload: true

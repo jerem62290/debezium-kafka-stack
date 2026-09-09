@@ -1,0 +1,60 @@
+---
+- name: Préparer et valider le bundle hors-ligne sur le contrôleur
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tags: [always]
+  roles:
+    - role: airgap_preflight
+    - role: pki_controller
+
+- name: Préparer toutes les VM RHEL
+  hosts: stack
+  gather_facts: true
+  become: true
+  roles:
+    - role: common
+    - role: node_exporter
+
+- name: Installer Kafka 3.9.2 en KRaft
+  hosts: kafka
+  gather_facts: true
+  become: true
+  serial: 1
+  roles:
+    - role: java21
+    - role: kafka
+
+- name: Initialiser les ACL Kafka
+  hosts: kafka[0]
+  gather_facts: false
+  become: true
+  roles:
+    - role: kafka_acls
+
+- name: Installer Kafka Connect et Debezium 3.1.3.Final
+  hosts: kafka_connect
+  gather_facts: true
+  become: true
+  serial: 1
+  roles:
+    - role: java21
+    - role: kafka_connect
+
+- name: Installer la toolbox et l'observabilité
+  hosts: monitoring
+  gather_facts: true
+  become: true
+  roles:
+    - role: java21
+    - role: monitoring
+    - role: akhq
+
+- name: Vérifier la stack déployée
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  roles:
+    - role: verify

@@ -1,0 +1,9 @@
+---
+- name: Vérifier une stack déjà déployée
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  roles:
+    - role: verify
+

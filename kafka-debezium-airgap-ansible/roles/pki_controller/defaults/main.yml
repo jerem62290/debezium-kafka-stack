@@ -1,0 +1,5 @@
+---
+pki_ca_common_name: CDC Kafka Internal CA
+pki_ca_days: 3650
+pki_certificate_days: 825
+

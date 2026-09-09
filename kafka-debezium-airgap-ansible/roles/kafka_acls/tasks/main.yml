@@ -1,0 +1,54 @@
+---
+- name: Attendre que le quorum KRaft soit disponible
+  ansible.builtin.command:
+    argv:
+      - "{{ kafka_install_dir }}/bin/kafka-metadata-quorum.sh"
+      - --bootstrap-server
+      - "{{ inventory_hostname }}:{{ kafka_client_port }}"
+      - --command-config
+      - /etc/kafka/kraft/broker-client.properties
+      - describe
+      - --status
+  register: kafka_quorum_status
+  retries: 30
+  delay: 6
+  until: kafka_quorum_status.rc == 0 and kafka_quorum_status.stdout is search('LeaderId')
+  changed_when: false
+  no_log: true
+  environment:
+    JAVA_HOME: "{{ java21_home }}"
+    PATH: "{{ java21_home }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+
+- name: Installer le script idempotent d'ACL
+  ansible.builtin.template:
+    src: bootstrap-kafka-acls.sh.j2
+    dest: /usr/local/sbin/bootstrap-kafka-acls.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Appliquer les ACL Kafka
+  ansible.builtin.command: /usr/local/sbin/bootstrap-kafka-acls.sh
+  register: kafka_acl_result
+  changed_when: false
+  no_log: true
+  when: kafka_acl_enabled | bool
+  environment:
+    JAVA_HOME: "{{ java21_home }}"
+    PATH: "{{ java21_home }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+
+- name: Lister les ACL après bootstrap
+  ansible.builtin.command:
+    argv:
+      - "{{ kafka_install_dir }}/bin/kafka-acls.sh"
+      - --bootstrap-server
+      - "{{ inventory_hostname }}:{{ kafka_client_port }}"
+      - --command-config
+      - /etc/kafka/kraft/broker-client.properties
+      - --list
+  changed_when: false
+  no_log: true
+  when: kafka_acl_enabled | bool
+  environment:
+    JAVA_HOME: "{{ java21_home }}"
+    PATH: "{{ java21_home }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"

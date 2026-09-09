@@ -1,0 +1,278 @@
+---
+- name: Créer le groupe Kafka Connect
+  ansible.builtin.group:
+    name: "{{ kafka_connect_group }}"
+    system: true
+
+- name: Créer l'utilisateur Kafka Connect
+  ansible.builtin.user:
+    name: "{{ kafka_connect_user }}"
+    group: "{{ kafka_connect_group }}"
+    system: true
+    shell: /sbin/nologin
+    home: "{{ connect_data_dir }}"
+    create_home: false
+
+- name: Créer les répertoires Kafka Connect
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(kafka_connect_user) }}"
+    group: "{{ item.group | default(kafka_connect_group) }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ connect_install_dir }}", owner: root, group: root, mode: "0755"}
+    - {path: "{{ connect_plugin_dir }}", owner: root, group: "{{ kafka_connect_group }}", mode: "0755"}
+    - {path: "{{ connect_plugin_dir }}/postgres", owner: root, group: "{{ kafka_connect_group }}", mode: "0755"}
+    - {path: "{{ connect_plugin_dir }}/oracle", owner: root, group: "{{ kafka_connect_group }}", mode: "0755"}
+    - {path: "{{ connect_config_dir }}", owner: root, group: "{{ kafka_connect_group }}", mode: "0750"}
+    - {path: "{{ connect_pki_dir }}", owner: root, group: "{{ kafka_connect_group }}", mode: "0750"}
+    - {path: "{{ connect_config_dir }}/secrets", owner: root, group: "{{ kafka_connect_group }}", mode: "0750"}
+    - {path: "{{ connect_data_dir }}", mode: "0750"}
+    - {path: "{{ connect_log_dir }}", mode: "0750"}
+    - {path: "{{ jmx_exporter_install_dir }}", owner: root, group: root, mode: "0755"}
+
+- name: Installer les binaires Kafka Connect depuis le bundle
+  ansible.builtin.unarchive:
+    src: "{{ airgap_bundle_dir }}/artifacts/kafka/kafka_{{ kafka_scala_version }}-{{ kafka_version }}.tgz"
+    dest: "{{ connect_install_dir }}"
+    remote_src: false
+    extra_opts:
+      - --strip-components=1
+    creates: "{{ connect_install_dir }}/bin/connect-distributed.sh"
+  notify: Redémarrer kafka-connect
+
+- name: Installer le connecteur Debezium PostgreSQL
+  ansible.builtin.unarchive:
+    src: "{{ airgap_bundle_dir }}/artifacts/debezium/debezium-connector-postgres-{{ debezium_version }}-plugin.tar.gz"
+    dest: "{{ connect_plugin_dir }}/postgres"
+    remote_src: false
+    extra_opts:
+      - --strip-components=1
+    creates: "{{ connect_plugin_dir }}/postgres/debezium-connector-postgres-{{ debezium_version }}.jar"
+  notify: Redémarrer kafka-connect
+
+- name: Protéger les fichiers du plugin PostgreSQL
+  ansible.builtin.file:
+    path: "{{ connect_plugin_dir }}/postgres"
+    state: directory
+    owner: root
+    group: "{{ kafka_connect_group }}"
+    recurse: true
+
+- name: Installer le connecteur Debezium Oracle
+  ansible.builtin.unarchive:
+    src: "{{ airgap_bundle_dir }}/artifacts/debezium/debezium-connector-oracle-{{ debezium_version }}-plugin.tar.gz"
+    dest: "{{ connect_plugin_dir }}/oracle"
+    remote_src: false
+    extra_opts:
+      - --strip-components=1
+    creates: "{{ connect_plugin_dir }}/oracle/debezium-connector-oracle-{{ debezium_version }}.jar"
+  notify: Redémarrer kafka-connect
+
+- name: Protéger les fichiers du plugin Oracle
+  ansible.builtin.file:
+    path: "{{ connect_plugin_dir }}/oracle"
+    state: directory
+    owner: root
+    group: "{{ kafka_connect_group }}"
+    recurse: true
+
+- name: Installer les bibliothèques Oracle requises
+  ansible.builtin.copy:
+    src: "{{ airgap_bundle_dir }}/artifacts/debezium/{{ item }}"
+    dest: "{{ connect_plugin_dir }}/oracle/{{ item }}"
+    owner: root
+    group: "{{ kafka_connect_group }}"
+    mode: "0644"
+  loop:
+    - ojdbc11-21.15.0.0.jar
+    - xdb-21.15.0.0.jar
+    - xmlparserv2-21.15.0.0.jar
+  notify: Redémarrer kafka-connect
+
+- name: Installer l'agent JMX Exporter pour Connect
+  ansible.builtin.copy:
+    src: "{{ airgap_bundle_dir }}/artifacts/monitoring/jmx_prometheus_javaagent-{{ jmx_exporter_version }}.jar"
+    dest: "{{ jmx_exporter_install_dir }}/jmx_prometheus_javaagent-{{ jmx_exporter_version }}.jar"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Redémarrer kafka-connect
+
+- name: Installer la PKI Kafka Connect
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: "{{ kafka_connect_group }}"
+    mode: "0640"
+  loop:
+    - src: "{{ stack_state_dir }}/pki/ca/ca.crt"
+      dest: "{{ connect_pki_dir }}/ca.crt"
+    - src: "{{ stack_state_dir }}/pki/identities/{{ inventory_hostname }}/keystore.p12"
+      dest: "{{ connect_pki_dir }}/keystore.p12"
+  no_log: true
+  notify: Redémarrer kafka-connect
+  register: connect_pki_copy
+
+- name: Supprimer le truststore Connect si l'autorité a changé  # noqa no-handler
+  ansible.builtin.file:
+    path: "{{ connect_pki_dir }}/truststore.p12"
+    state: absent
+  when: connect_pki_copy.results[0].changed
+
+- name: Détecter un truststore Connect existant
+  ansible.builtin.stat:
+    path: "{{ connect_pki_dir }}/truststore.p12"
+  register: connect_truststore_file
+
+- name: Valider le truststore Connect existant
+  ansible.builtin.command:
+    argv:
+      - "{{ java21_home }}/bin/keytool"
+      - -list
+      - -alias
+      - cdc-stack-ca
+      - -keystore
+      - "{{ connect_pki_dir }}/truststore.p12"
+      - -storetype
+      - PKCS12
+      - -storepass
+      - "{{ hostvars['localhost'].kafka_truststore_password }}"
+  register: connect_truststore_check
+  changed_when: false
+  failed_when: false
+  when: connect_truststore_file.stat.exists
+  no_log: true
+
+- name: Supprimer un truststore Connect invalide
+  ansible.builtin.file:
+    path: "{{ connect_pki_dir }}/truststore.p12"
+    state: absent
+  when:
+    - connect_truststore_file.stat.exists
+    - connect_truststore_check.rc != 0
+
+- name: Créer le truststore Kafka Connect
+  ansible.builtin.command:
+    argv:
+      - "{{ java21_home }}/bin/keytool"
+      - -importcert
+      - -noprompt
+      - -alias
+      - cdc-stack-ca
+      - -file
+      - "{{ connect_pki_dir }}/ca.crt"
+      - -keystore
+      - "{{ connect_pki_dir }}/truststore.p12"
+      - -storetype
+      - PKCS12
+      - -storepass
+      - "{{ hostvars['localhost'].kafka_truststore_password }}"
+  args:
+    creates: "{{ connect_pki_dir }}/truststore.p12"
+  no_log: true
+  notify: Redémarrer kafka-connect
+
+- name: Protéger le truststore Kafka Connect
+  ansible.builtin.file:
+    path: "{{ connect_pki_dir }}/truststore.p12"
+    owner: root
+    group: "{{ kafka_connect_group }}"
+    mode: "0640"
+
+- name: Configurer le worker distribué Kafka Connect
+  ansible.builtin.template:
+    src: connect-distributed.properties.j2
+    dest: "{{ connect_config_dir }}/connect-distributed.properties"
+    owner: root
+    group: "{{ kafka_connect_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Redémarrer kafka-connect
+
+- name: Installer les secrets Kafka utilisables par les connecteurs
+  ansible.builtin.template:
+    src: kafka-secrets.properties.j2
+    dest: "{{ connect_config_dir }}/secrets/kafka.properties"
+    owner: root
+    group: "{{ kafka_connect_group }}"
+    mode: "0640"
+  no_log: true
+
+- name: Configurer l'export JMX Kafka Connect
+  ansible.builtin.template:
+    src: connect-jmx-exporter.yml.j2
+    dest: "{{ connect_config_dir }}/jmx-exporter.yml"
+    owner: root
+    group: "{{ kafka_connect_group }}"
+    mode: "0644"
+  notify: Redémarrer kafka-connect
+
+- name: Installer le service systemd Kafka Connect
+  ansible.builtin.template:
+    src: kafka-connect.service.j2
+    dest: /etc/systemd/system/kafka-connect.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Recharger systemd
+    - Redémarrer kafka-connect
+
+- name: Autoriser l'API Connect depuis la toolbox
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - "--add-rich-rule=rule family=ipv4 source address={{ item }} port port={{ connect_rest_port }} protocol=tcp accept"
+  loop: "{{ connect_rest_allowed_cidrs }}"
+  register: connect_rest_firewall
+  changed_when: "'ALREADY_ENABLED' not in (connect_rest_firewall.stdout ~ connect_rest_firewall.stderr)"
+  notify: Recharger firewalld
+  when: manage_firewalld | bool
+
+- name: Autoriser le scraping JMX Connect
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - "--add-rich-rule=rule family=ipv4 source address={{ hostvars[groups['monitoring'][0]].ansible_host }}/32 port port={{ connect_jmx_exporter_port }} protocol=tcp accept"
+  register: connect_jmx_firewall
+  changed_when: "'ALREADY_ENABLED' not in (connect_jmx_firewall.stdout ~ connect_jmx_firewall.stderr)"
+  notify: Recharger firewalld
+  when: manage_firewalld | bool
+
+- name: Appliquer les handlers Kafka Connect
+  ansible.builtin.meta: flush_handlers
+
+- name: Activer le service Kafka Connect
+  ansible.builtin.systemd:
+    name: kafka-connect
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Attendre l'API Kafka Connect locale
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ connect_rest_port }}/connectors"
+    status_code: 200
+  register: connect_api
+  retries: 36
+  delay: 5
+  until: connect_api.status == 200
+
+- name: Vérifier la présence des deux plugins Debezium
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ connect_rest_port }}/connector-plugins"
+    return_content: true
+    status_code: 200
+  register: connect_plugins
+
+- name: Valider les plugins PostgreSQL et Oracle
+  ansible.builtin.assert:
+    that:
+      - connect_plugins.content is search('io.debezium.connector.postgresql.PostgresConnector')
+      - connect_plugins.content is search('io.debezium.connector.oracle.OracleConnector')
+    fail_msg: Les plugins Debezium PostgreSQL et Oracle ne sont pas tous chargés.

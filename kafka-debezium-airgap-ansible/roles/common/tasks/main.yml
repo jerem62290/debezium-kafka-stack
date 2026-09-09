@@ -1,0 +1,70 @@
+---
+- name: Valider la plateforme cible
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == 'RedHat'
+      - ansible_distribution_version == '8.10'
+      - ansible_architecture == 'x86_64'
+    fail_msg: >-
+      Plateforme non prise en charge : {{ ansible_distribution }}
+      {{ ansible_distribution_version }} / {{ ansible_architecture }}.
+      Ce projet cible RHEL 8.10 x86_64.
+
+- name: Vérifier que SELinux n'est pas désactivé
+  ansible.builtin.assert:
+    that:
+      - ansible_selinux.status == 'enabled'
+      - required_selinux_mode != 'enforcing' or ansible_selinux.mode == 'enforcing'
+    fail_msg: SELinux doit être activé et, par défaut, en mode enforcing.
+  when: ansible_selinux is defined
+
+- name: Installer les prérequis depuis les dépôts RHEL configurés
+  ansible.builtin.dnf:
+    name: "{{ common_rhel_packages }}"
+    state: present
+    update_cache: false
+    disablerepo: "{{ '*' if rhel_internal_repo_ids | length > 0 else omit }}"
+    enablerepo: "{{ rhel_internal_repo_ids if rhel_internal_repo_ids | length > 0 else omit }}"
+
+- name: Activer chronyd et firewalld
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - chronyd
+    - firewalld
+
+- name: Gérer la résolution locale des membres de la stack
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE CDC STACK"
+    block: |
+      {% for host in groups['stack'] | sort %}
+      {{ hostvars[host].ansible_host }} {{ host }} {{ host.split('.')[0] }}
+      {% endfor %}
+    mode: "0644"
+
+- name: Installer les limites système de la stack
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/90-cdc-stack.conf
+    mode: "0644"
+    content: |
+      kafka          soft nofile 100000
+      kafka          hard nofile 100000
+      kafka-connect  soft nofile 100000
+      kafka-connect  hard nofile 100000
+      prometheus     soft nofile 65536
+      prometheus     hard nofile 65536
+
+- name: Installer les réglages noyau génériques
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/90-cdc-stack.conf
+    mode: "0644"
+    content: |
+      vm.swappiness = 1
+      net.core.somaxconn = 4096
+      net.ipv4.tcp_keepalive_time = 300
+      net.ipv4.tcp_keepalive_intvl = 30
+      net.ipv4.tcp_keepalive_probes = 5
+  notify: Recharger sysctl

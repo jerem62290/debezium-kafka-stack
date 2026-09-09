@@ -1,0 +1,38 @@
+{
+  "name": "oracle-exemple",
+  "config": {
+    "connector.class": "io.debezium.connector.oracle.OracleConnector",
+    "tasks.max": "1",
+    "database.hostname": "oracle.example.internal",
+    "database.port": "1521",
+    "database.user": "C##DEBEZIUM",
+    "database.password": "${file:/etc/kafka-connect/secrets/oracle-exemple.properties:database.password}",
+    "database.dbname": "ORCLCDB",
+    "database.pdb.name": "ORCLPDB1",
+    "topic.prefix": "ora.application",
+    "schema.include.list": "APPLICATION",
+    "table.include.list": "APPLICATION.COMMANDE,APPLICATION.CLIENT",
+    "snapshot.mode": "initial",
+    "log.mining.strategy": "online_catalog",
+    "heartbeat.interval.ms": "10000",
+    "schema.history.internal.kafka.bootstrap.servers": "kafka01.example.internal:9092,kafka02.example.internal:9092,kafka03.example.internal:9092",
+    "schema.history.internal.kafka.topic": "schemahistory.ora.application",
+    "schema.history.internal.producer.security.protocol": "SSL",
+    "schema.history.internal.producer.ssl.keystore.type": "PKCS12",
+    "schema.history.internal.producer.ssl.keystore.location": "/etc/kafka-connect/pki/keystore.p12",
+    "schema.history.internal.producer.ssl.keystore.password": "${file:/etc/kafka-connect/secrets/kafka.properties:kafka.keystore.password}",
+    "schema.history.internal.producer.ssl.key.password": "${file:/etc/kafka-connect/secrets/kafka.properties:kafka.keystore.password}",
+    "schema.history.internal.producer.ssl.truststore.type": "PKCS12",
+    "schema.history.internal.producer.ssl.truststore.location": "/etc/kafka-connect/pki/truststore.p12",
+    "schema.history.internal.producer.ssl.truststore.password": "${file:/etc/kafka-connect/secrets/kafka.properties:kafka.truststore.password}",
+    "schema.history.internal.consumer.security.protocol": "SSL",
+    "schema.history.internal.consumer.ssl.keystore.type": "PKCS12",
+    "schema.history.internal.consumer.ssl.keystore.location": "/etc/kafka-connect/pki/keystore.p12",
+    "schema.history.internal.consumer.ssl.keystore.password": "${file:/etc/kafka-connect/secrets/kafka.properties:kafka.keystore.password}",
+    "schema.history.internal.consumer.ssl.key.password": "${file:/etc/kafka-connect/secrets/kafka.properties:kafka.keystore.password}",
+    "schema.history.internal.consumer.ssl.truststore.type": "PKCS12",
+    "schema.history.internal.consumer.ssl.truststore.location": "/etc/kafka-connect/pki/truststore.p12",
+    "schema.history.internal.consumer.ssl.truststore.password": "${file:/etc/kafka-connect/secrets/kafka.properties:kafka.truststore.password}"
+  }
+}
+

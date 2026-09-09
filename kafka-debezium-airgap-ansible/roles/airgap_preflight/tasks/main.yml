@@ -1,0 +1,149 @@
+---
+- name: Vérifier la topologie attendue
+  ansible.builtin.assert:
+    that:
+      - groups.get('kafka', []) | length == 3
+      - groups.get('kafka_connect', []) | length >= 2
+      - groups.get('monitoring', []) | length == 1
+      - groups.get('stack', []) | length == ((groups.get('stack', []) | unique) | length)
+    fail_msg: >-
+      L'inventaire doit contenir exactement 3 hôtes kafka, au moins 2 hôtes
+      kafka_connect et exactement 1 hôte monitoring.
+
+- name: Vérifier les adresses et interdire l'inventaire exemple
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].ansible_host is defined
+      - hostvars[item].ansible_host | string is match('^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$')
+      - not (item is search('\.example\.internal$'))
+      - not (hostvars[item].ansible_host | string is match('^192\.0\.2\.'))
+    fail_msg: >-
+      Remplacez les noms et ansible_host d'exemple. Une adresse IPv4 explicite est
+      requise pour SSH, les SAN TLS et les règles firewalld (hôte {{ item }}).
+  loop: "{{ groups.get('stack', []) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Vérifier l'unicité des adresses IP
+  ansible.builtin.assert:
+    that:
+      - stack_addresses | length == (stack_addresses | unique | length)
+    fail_msg: Chaque VM doit avoir une adresse ansible_host unique.
+  vars:
+    stack_addresses: "{{ groups['stack'] | map('extract', hostvars, 'ansible_host') | list }}"
+
+- name: Vérifier les outils du contrôleur
+  ansible.builtin.shell: |
+    command -v openssl >/dev/null
+    command -v python3 >/dev/null
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Valider les artefacts et leurs SHA-512
+  ansible.builtin.command:
+    argv:
+      - "{{ playbook_dir }}/scripts/verify-airgap-bundle.sh"
+      - "{{ airgap_bundle_dir }}"
+  changed_when: false
+
+- name: Créer l'état privé du déploiement
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop:
+    - "{{ stack_state_dir }}"
+    - "{{ stack_state_dir }}/secrets"
+    - "{{ stack_state_dir }}/pki"
+
+- name: Générer les secrets persistants s'ils n'existent pas
+  ansible.builtin.shell: |
+    set -o errexit -o nounset -o pipefail
+    umask 077
+    if [[ ! -s {{ (stack_state_dir ~ '/secrets/' ~ item) | quote }} ]]; then
+      openssl rand -hex 32 > {{ (stack_state_dir ~ '/secrets/' ~ item) | quote }}
+    fi
+  args:
+    executable: /bin/bash
+  loop:
+    - kafka_keystore_password
+    - kafka_truststore_password
+    - grafana_admin_password
+    - akhq_admin_password
+    - akhq_reader_password
+    - akhq_jwt_secret
+  changed_when: false
+  no_log: true
+
+- name: Lire les secrets persistants
+  ansible.builtin.slurp:
+    src: "{{ stack_state_dir }}/secrets/{{ item }}"
+  register: generated_secrets
+  loop:
+    - kafka_keystore_password
+    - kafka_truststore_password
+    - grafana_admin_password
+    - akhq_admin_password
+    - akhq_reader_password
+    - akhq_jwt_secret
+  no_log: true
+
+- name: Publier les secrets pour les rôles suivants
+  ansible.builtin.set_fact:
+    kafka_keystore_password: >-
+      {{ kafka_keystore_password_override | default((generated_secrets.results[0].content | b64decode | trim), true) }}
+    kafka_truststore_password: >-
+      {{ kafka_truststore_password_override | default((generated_secrets.results[1].content | b64decode | trim), true) }}
+    grafana_admin_password: >-
+      {{ grafana_admin_password_override | default((generated_secrets.results[2].content | b64decode | trim), true) }}
+    akhq_admin_password: >-
+      {{ akhq_admin_password_override | default((generated_secrets.results[3].content | b64decode | trim), true) }}
+    akhq_reader_password: >-
+      {{ akhq_reader_password_override | default((generated_secrets.results[4].content | b64decode | trim), true) }}
+    akhq_jwt_secret: "{{ generated_secrets.results[5].content | b64decode | trim }}"
+  no_log: true
+
+- name: Valider le format des secrets déployables
+  ansible.builtin.assert:
+    that:
+      - kafka_keystore_password is match('^[A-Za-z0-9]{16,128}$')
+      - kafka_truststore_password is match('^[A-Za-z0-9]{16,128}$')
+      - grafana_admin_password is match('^[A-Za-z0-9]{16,128}$')
+      - akhq_admin_password is match('^[A-Za-z0-9]{16,128}$')
+      - akhq_reader_password is match('^[A-Za-z0-9]{16,128}$')
+      - akhq_jwt_secret is match('^[A-Za-z0-9]{32,128}$')
+    fail_msg: Les secrets doivent contenir uniquement 16 à 128 caractères alphanumériques.
+  no_log: true
+
+- name: Vérifier l'identifiant KRaft persistant
+  ansible.builtin.stat:
+    path: "{{ stack_state_dir }}/kraft_cluster_id"
+  register: kraft_id_file
+
+- name: Générer l'identifiant du cluster KRaft
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "import base64,uuid; print(base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip('='))"
+  register: generated_kraft_id
+  when: not kraft_id_file.stat.exists
+  changed_when: true
+
+- name: Conserver l'identifiant KRaft
+  ansible.builtin.copy:
+    content: "{{ generated_kraft_id.stdout | trim }}\n"
+    dest: "{{ stack_state_dir }}/kraft_cluster_id"
+    mode: "0600"
+    force: false
+  when: not kraft_id_file.stat.exists
+
+- name: Lire l'identifiant KRaft
+  ansible.builtin.slurp:
+    src: "{{ stack_state_dir }}/kraft_cluster_id"
+  register: kraft_id_content
+
+- name: Publier l'identifiant KRaft
+  ansible.builtin.set_fact:
+    kraft_cluster_id: "{{ kraft_id_content.content | b64decode | trim }}"

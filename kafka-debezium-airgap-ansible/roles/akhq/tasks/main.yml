@@ -1,0 +1,194 @@
+---
+- name: Créer le groupe AKHQ
+  ansible.builtin.group:
+    name: akhq
+    system: true
+
+- name: Créer le compte AKHQ
+  ansible.builtin.user:
+    name: akhq
+    group: akhq
+    system: true
+    shell: /sbin/nologin
+    home: "{{ akhq_data_dir }}"
+    create_home: false
+
+- name: Créer les répertoires AKHQ
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ akhq_install_dir }}", owner: root, group: root, mode: "0755"}
+    - {path: "{{ akhq_java_dir }}", owner: root, group: root, mode: "0755"}
+    - {path: "{{ akhq_config_dir }}", owner: root, group: akhq, mode: "0750"}
+    - {path: "{{ akhq_pki_dir }}", owner: root, group: akhq, mode: "0750"}
+    - {path: "{{ akhq_data_dir }}", owner: akhq, group: akhq, mode: "0750"}
+
+- name: Installer le JRE Temurin 25 isolé pour AKHQ
+  ansible.builtin.unarchive:
+    src: "{{ airgap_bundle_dir }}/artifacts/toolbox/{{ akhq_jre_archive }}"
+    dest: "{{ akhq_java_dir }}"
+    remote_src: false
+    extra_opts: [--strip-components=1]
+    creates: "{{ akhq_java_dir }}/bin/java"
+  notify: Redémarrer akhq
+
+- name: Vérifier le JRE isolé AKHQ
+  ansible.builtin.shell: |
+    set -o errexit -o nounset -o pipefail
+    {{ akhq_java_dir }}/bin/java -version 2>&1 | head -n 1
+  args:
+    executable: /bin/bash
+  register: akhq_java_version
+  changed_when: false
+
+- name: Valider Java 25 sans modifier Java 21 global
+  ansible.builtin.assert:
+    that:
+      - akhq_java_version.stdout is search('version "25[.]')
+    fail_msg: "Le runtime isolé d'AKHQ n'est pas Java 25 : {{ akhq_java_version.stdout }}"
+
+- name: Installer le JAR AKHQ
+  ansible.builtin.copy:
+    src: "{{ airgap_bundle_dir }}/artifacts/toolbox/akhq-{{ akhq_version }}-all.jar"
+    dest: "{{ akhq_install_dir }}/akhq.jar"
+    owner: root
+    group: akhq
+    mode: "0640"
+  notify: Redémarrer akhq
+
+- name: Installer la PKI AKHQ
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: akhq
+    mode: "0640"
+  loop:
+    - src: "{{ stack_state_dir }}/pki/ca/ca.crt"
+      dest: "{{ akhq_pki_dir }}/ca.crt"
+    - src: "{{ stack_state_dir }}/pki/identities/akhq/keystore.p12"
+      dest: "{{ akhq_pki_dir }}/keystore.p12"
+  no_log: true
+  notify: Redémarrer akhq
+  register: akhq_pki_copy
+
+- name: Supprimer le truststore AKHQ si l'autorité a changé  # noqa no-handler
+  ansible.builtin.file:
+    path: "{{ akhq_pki_dir }}/truststore.p12"
+    state: absent
+  when: akhq_pki_copy.results[0].changed
+
+- name: Détecter un truststore AKHQ existant
+  ansible.builtin.stat:
+    path: "{{ akhq_pki_dir }}/truststore.p12"
+  register: akhq_truststore_file
+
+- name: Valider le truststore AKHQ existant
+  ansible.builtin.command:
+    argv:
+      - "{{ java21_home }}/bin/keytool"
+      - -list
+      - -alias
+      - cdc-stack-ca
+      - -keystore
+      - "{{ akhq_pki_dir }}/truststore.p12"
+      - -storetype
+      - PKCS12
+      - -storepass
+      - "{{ hostvars['localhost'].kafka_truststore_password }}"
+  register: akhq_truststore_check
+  changed_when: false
+  failed_when: false
+  when: akhq_truststore_file.stat.exists
+  no_log: true
+
+- name: Supprimer un truststore AKHQ invalide
+  ansible.builtin.file:
+    path: "{{ akhq_pki_dir }}/truststore.p12"
+    state: absent
+  when:
+    - akhq_truststore_file.stat.exists
+    - akhq_truststore_check.rc != 0
+
+- name: Créer le truststore AKHQ
+  ansible.builtin.command:
+    argv:
+      - "{{ java21_home }}/bin/keytool"
+      - -importcert
+      - -noprompt
+      - -alias
+      - cdc-stack-ca
+      - -file
+      - "{{ akhq_pki_dir }}/ca.crt"
+      - -keystore
+      - "{{ akhq_pki_dir }}/truststore.p12"
+      - -storetype
+      - PKCS12
+      - -storepass
+      - "{{ hostvars['localhost'].kafka_truststore_password }}"
+  args:
+    creates: "{{ akhq_pki_dir }}/truststore.p12"
+  no_log: true
+  notify: Redémarrer akhq
+
+- name: Protéger le truststore AKHQ
+  ansible.builtin.file:
+    path: "{{ akhq_pki_dir }}/truststore.p12"
+    owner: root
+    group: akhq
+    mode: "0640"
+
+- name: Configurer AKHQ et ses comptes locaux
+  ansible.builtin.template:
+    src: application.yml.j2
+    dest: "{{ akhq_config_dir }}/application.yml"
+    owner: root
+    group: akhq
+    mode: "0640"
+  no_log: true
+  notify: Redémarrer akhq
+
+- name: Installer le service systemd AKHQ
+  ansible.builtin.template:
+    src: akhq.service.j2
+    dest: /etc/systemd/system/akhq.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Recharger systemd
+    - Redémarrer akhq
+
+- name: Autoriser AKHQ depuis les réseaux déclarés
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - "--add-rich-rule=rule family=ipv4 source address={{ item }} port port={{ akhq_port }} protocol=tcp accept"
+  loop: "{{ ui_allowed_cidrs }}"
+  register: akhq_firewall
+  changed_when: "'ALREADY_ENABLED' not in (akhq_firewall.stdout ~ akhq_firewall.stderr)"
+  notify: Recharger firewalld
+  when:
+    - manage_firewalld | bool
+    - ui_bind_address != '127.0.0.1'
+
+- name: Appliquer les handlers AKHQ
+  ansible.builtin.meta: flush_handlers
+
+- name: Activer AKHQ
+  ansible.builtin.systemd:
+    name: akhq
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Attendre l'écoute AKHQ
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ akhq_port }}"
+    timeout: 180

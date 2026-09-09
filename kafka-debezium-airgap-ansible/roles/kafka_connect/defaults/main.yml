@@ -1,0 +1,10 @@
+---
+kafka_connect_user: kafka-connect
+kafka_connect_group: kafka-connect
+connect_config_dir: /etc/kafka-connect
+connect_pki_dir: /etc/kafka-connect/pki
+connect_rest_allowed_cidrs: >-
+  {{ [hostvars[groups['monitoring'][0]].ansible_host ~ '/32'] }}
+jmx_exporter_version: 1.6.0
+jmx_exporter_install_dir: /opt/jmx-exporter
+

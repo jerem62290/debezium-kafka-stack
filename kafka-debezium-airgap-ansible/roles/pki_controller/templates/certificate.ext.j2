@@ -1,0 +1,15 @@
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+{% if pki_identity_profile == 'broker' %}
+extendedKeyUsage=serverAuth,clientAuth
+subjectAltName=@alt_names
+
+[alt_names]
+DNS.1={{ pki_identity_cn }}
+{% if pki_identity_address | default('') | length > 0 %}
+IP.1={{ pki_identity_address }}
+{% endif %}
+{% else %}
+extendedKeyUsage=clientAuth
+{% endif %}
+

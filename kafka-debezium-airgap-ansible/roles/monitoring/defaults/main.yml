@@ -1,0 +1,16 @@
+---
+prometheus_version: 3.13.2
+alertmanager_version: 0.34.0
+kafka_exporter_version: 1.9.0
+blackbox_exporter_version: 0.28.0
+grafana_version: 13.2.0
+prometheus_install_dir: /opt/prometheus
+alertmanager_install_dir: /opt/alertmanager
+kafka_exporter_install_dir: /opt/kafka_exporter
+blackbox_exporter_install_dir: /opt/blackbox_exporter
+kafka_cli_install_dir: /opt/kafka-cli
+prometheus_config_dir: /etc/prometheus
+alertmanager_config_dir: /etc/alertmanager
+kafka_exporter_config_dir: /etc/kafka-exporter
+blackbox_exporter_config_dir: /etc/blackbox-exporter
+
