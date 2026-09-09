@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export JAVA_HOME={{ java21_home }}
+export PATH="${JAVA_HOME}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+
+acl="{{ kafka_install_dir }}/bin/kafka-acls.sh"
+bootstrap="{{ inventory_hostname }}:{{ kafka_client_port }}"
+config=/etc/kafka/kraft/broker-client.properties
+
+add_acl() {
+  "${acl}" --bootstrap-server "${bootstrap}" --command-config "${config}" --add "$@"
+}
+
+{% for host in groups['kafka_connect'] | sort %}
+add_acl --allow-principal 'User:{{ host }}' --cluster --operation Create --operation Describe --operation IdempotentWrite
+add_acl --allow-principal 'User:{{ host }}' --topic '*' --operation Read --operation Write --operation Create --operation Describe --operation DescribeConfigs
+add_acl --allow-principal 'User:{{ host }}' --group '*' --operation Read --operation Describe
+{% endfor %}
+
+add_acl --allow-principal 'User:kafka-exporter' --cluster --operation Describe
+add_acl --allow-principal 'User:kafka-exporter' --topic '*' --operation Read --operation Describe
+add_acl --allow-principal 'User:kafka-exporter' --group '*' --operation Read --operation Describe
+
+# AKHQ applique ses groupes admin/lecture côté application ; ce principal Kafka porte
+# les capacités d'administration nécessaires à la toolbox.
+add_acl --allow-principal 'User:akhq' --cluster --operation All
+add_acl --allow-principal 'User:akhq' --topic '*' --operation All
+add_acl --allow-principal 'User:akhq' --group '*' --operation All
+
+{% for client in kafka_extra_clients %}
+add_acl --allow-principal 'User:{{ client }}' --cluster --operation Describe
+add_acl --allow-principal 'User:{{ client }}' --topic '*' --operation Read --operation Describe
+add_acl --allow-principal 'User:{{ client }}' --group '*' --operation Read --operation Describe
+{% endfor %}

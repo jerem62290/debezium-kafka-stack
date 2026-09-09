@@ -1,0 +1,40 @@
+---
+- name: Tester le rôle réseau avec un simulateur sans modifier firewalld
+  hosts: "monitoring[0]:kafka_connect[0]"
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Créer l'état isolé du simulateur
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: cdc-firewall-
+      register: firewall_test_dir
+    - name: Installer le simulateur dans le répertoire de test uniquement
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/fixtures/firewall-cmd"
+        dest: "{{ firewall_test_dir.path }}/firewall-cmd"
+        mode: "0700"
+    - name: Exécuter deux passages réseau simulés
+      environment:
+        PATH: "{{ firewall_test_dir.path }}:/usr/local/bin:/usr/bin:/bin"
+        CDC_FIREWALL_TEST_STATE: "{{ firewall_test_dir.path }}/state.json"
+      block:
+        - name: Premier passage des ouvertures admin
+          ansible.builtin.include_role:
+            name: admin_network
+        - name: Deuxième passage idempotent
+          ansible.builtin.include_role:
+            name: admin_network
+    - name: Lire les ouvertures simulées
+      ansible.builtin.slurp:
+        src: "{{ firewall_test_dir.path }}/state.json"
+      register: firewall_test_state
+    - name: Vérifier toutes les zones et tous les ports admin de chaque type de VM
+      ansible.builtin.assert:
+        that:
+          - firewall_test_state.content | b64decode | from_json == firewall_test_expected
+      vars:
+        firewall_test_expected: >-
+          {{ ['public/permanent', 'internal/permanent', 'public/runtime', 'internal/runtime', 'runtime-only/runtime'] |
+             product(admin_network_ports) | map('join', '/') | map('regex_replace', '$', '/tcp') | sort }}

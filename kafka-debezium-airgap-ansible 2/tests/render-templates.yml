@@ -1,0 +1,134 @@
+---
+- name: Initialiser les valeurs factices de rendu
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Créer un répertoire de rendu temporaire
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: cdc-render-
+      register: cdc_render_temp
+      when: cdc_test_root is not defined
+    - name: Publier le chemin des rendus
+      ansible.builtin.set_fact:
+        cdc_render_dir: "{{ cdc_test_root | default(cdc_render_temp.path) }}"
+    - name: Publier les secrets factices
+      ansible.builtin.set_fact:
+        kafka_sasl_passwords: {}
+        grafana_admin_password: test-grafana-password
+        akhq_admin_password: test-akhq-admin-password
+        akhq_reader_password: test-akhq-reader-password
+        akhq_jwt_secret: test-jwt-secret-long-enough-for-template-rendering
+        kraft_cluster_id: MkU3OEVBNTcwNTJENDM2Qk
+
+    - name: Publier les identités SASL factices
+      ansible.builtin.set_fact:
+        kafka_sasl_passwords: "{{ kafka_sasl_passwords | combine({item: item | hash('sha256')}) }}"
+      loop: "{{ groups['kafka'] + groups['kafka_connect'] + ['akhq', 'kafka-exporter'] + kafka_extra_clients }}"
+    - name: Afficher le répertoire à contrôler
+      ansible.builtin.debug:
+        var: cdc_render_dir
+
+- name: Rendre les modèles Kafka
+  hosts: kafka[0]
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Charger les valeurs par défaut Kafka
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../roles/kafka/defaults/main.yml"
+    - name: Créer le répertoire de test Kafka
+      ansible.builtin.file:
+        path: "{{ hostvars['localhost'].cdc_render_dir }}/kafka"
+        state: directory
+        mode: "0700"
+    - name: Définir le node ID de test
+      ansible.builtin.set_fact:
+        kafka_node_id: 1
+    - name: Rendre les modèles Kafka
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/kafka/templates/{{ item }}"
+        dest: "{{ hostvars['localhost'].cdc_render_dir }}/kafka/{{ item | regex_replace('[.]j2$', '') }}"
+        mode: "0600"
+      loop:
+        - server.properties.j2
+        - broker-client.properties.j2
+        - kafka-jmx-exporter.yml.j2
+        - log4j2.yaml.j2
+        - kafka.service.j2
+    - name: Rendre le script ACL
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/kafka_acls/templates/bootstrap-kafka-acls.sh.j2"
+        dest: "{{ hostvars['localhost'].cdc_render_dir }}/kafka/bootstrap-kafka-acls.sh"
+        mode: "0600"
+
+- name: Rendre les modèles Kafka Connect
+  hosts: kafka_connect[0]
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Charger les valeurs par défaut Kafka Connect
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../roles/kafka_connect/defaults/main.yml"
+    - name: Créer le répertoire de test Connect
+      ansible.builtin.file:
+        path: "{{ hostvars['localhost'].cdc_render_dir }}/connect"
+        state: directory
+        mode: "0700"
+    - name: Rendre les modèles Kafka Connect
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/kafka_connect/templates/{{ item }}"
+        dest: "{{ hostvars['localhost'].cdc_render_dir }}/connect/{{ item | regex_replace('[.]j2$', '') }}"
+        mode: "0600"
+      loop:
+        - connect-distributed.properties.j2
+        - connect-jmx-exporter.yml.j2
+        - kafka-secrets.properties.j2
+        - kafka-connect.service.j2
+
+- name: Rendre les modèles d'observabilité et AKHQ
+  hosts: monitoring[0]
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Charger les valeurs par défaut monitoring
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../roles/monitoring/defaults/main.yml"
+    - name: Charger les valeurs par défaut AKHQ
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../roles/akhq/defaults/main.yml"
+    - name: Créer les répertoires de test toolbox
+      ansible.builtin.file:
+        path: "{{ hostvars['localhost'].cdc_render_dir }}/{{ item }}"
+        state: directory
+        mode: "0700"
+      loop: [monitoring, akhq]
+    - name: Rendre les modèles d'observabilité
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/monitoring/templates/{{ item }}"
+        dest: "{{ hostvars['localhost'].cdc_render_dir }}/monitoring/{{ item | regex_replace('[.]j2$', '') }}"
+        mode: "0600"
+      loop:
+        - prometheus.yml.j2
+        - alert-rules.yml.j2
+        - alertmanager.yml.j2
+        - blackbox.yml.j2
+        - grafana.ini.j2
+        - grafana-sysconfig.j2
+        - grafana-datasource.yml.j2
+        - grafana-dashboard-provider.yml.j2
+        - cdc-overview.json.j2
+        - prometheus.service.j2
+        - alertmanager.service.j2
+        - kafka-exporter.service.j2
+        - kafka-exporter-sasl.env.j2
+        - toolbox-client.properties.j2
+        - blackbox-exporter.service.j2
+    - name: Rendre les modèles AKHQ
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/akhq/templates/{{ item }}"
+        dest: "{{ hostvars['localhost'].cdc_render_dir }}/akhq/{{ item | regex_replace('[.]j2$', '') }}"
+        mode: "0600"
+      loop:
+        - application.yml.j2
+        - akhq.service.j2

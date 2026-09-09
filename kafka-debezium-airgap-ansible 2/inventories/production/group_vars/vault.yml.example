@@ -1,0 +1,10 @@
+---
+# Facultatif : copier vers vault.yml et chiffrer avec ansible-vault.
+# Les secrets par défaut restent générés dans .state ; les overrides sont prioritaires.
+# grafana_admin_password_override: "..."
+# akhq_admin_password_override: "..."
+# akhq_reader_password_override: "..."
+# kafka_sasl_password_overrides:
+#   kafka01.mondomaine: "..."
+#   akhq: "..."
+# Secrets : 16 à 128 caractères alphanumériques. Ne jamais versionner en clair.

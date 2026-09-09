@@ -1,0 +1,16 @@
+---
+- name: Recharger systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Redémarrer kafka
+  ansible.builtin.systemd:
+    name: kafka
+    enabled: true
+    state: restarted
+    daemon_reload: true
+
+- name: Recharger firewalld
+  ansible.builtin.command: firewall-cmd --reload
+  changed_when: true
+

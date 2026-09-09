@@ -1,0 +1,76 @@
+---
+- name: Vérifier la topologie attendue
+  ansible.builtin.assert:
+    that:
+      - groups.get('kafka', []) | length == 3
+      - groups.get('kafka_connect', []) | length >= 2
+      - groups.get('monitoring', []) | length == 1
+      - groups.get('stack', []) | length == ((groups.get('stack', []) | unique) | length)
+    fail_msg: >-
+      L'inventaire doit contenir exactement 3 hôtes kafka, au moins 2 hôtes
+      kafka_connect et exactement 1 hôte monitoring.
+
+- name: Vérifier les adresses et interdire l'inventaire exemple
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].ansible_host is defined
+      - hostvars[item].ansible_host | string is match('^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$')
+      - not (item is search('\.example\.internal$'))
+      - not (hostvars[item].ansible_host | string is match('^192\.0\.2\.'))
+    fail_msg: >-
+      Remplacez les noms et ansible_host d'exemple. Une adresse IPv4 explicite est
+      requise pour SSH et les règles firewalld (hôte {{ item }}).
+  loop: "{{ groups.get('stack', []) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Vérifier l'unicité des adresses IP
+  ansible.builtin.assert:
+    that:
+      - stack_addresses | length == (stack_addresses | unique | length)
+    fail_msg: Chaque VM doit avoir une adresse ansible_host unique.
+  vars:
+    stack_addresses: "{{ groups['stack'] | map('extract', hostvars, 'ansible_host') | list }}"
+
+- name: Valider les artefacts et leurs SHA-512
+  ansible.builtin.command:
+    argv:
+      - "{{ playbook_dir }}/scripts/verify-airgap-bundle.sh"
+      - "{{ airgap_bundle_dir }}"
+  changed_when: false
+
+- name: Préparer les identifiants sans certificat
+  ansible.builtin.include_role:
+    name: credentials
+
+- name: Vérifier l'identifiant KRaft persistant
+  ansible.builtin.stat:
+    path: "{{ stack_state_dir }}/kraft_cluster_id"
+  register: kraft_id_file
+
+- name: Générer l'identifiant du cluster KRaft
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "import base64,uuid; print(base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip('='))"
+  register: generated_kraft_id
+  when: not kraft_id_file.stat.exists
+  changed_when: true
+
+- name: Conserver l'identifiant KRaft
+  ansible.builtin.copy:
+    content: "{{ generated_kraft_id.stdout | trim }}\n"
+    dest: "{{ stack_state_dir }}/kraft_cluster_id"
+    mode: "0600"
+    force: false
+  when: not kraft_id_file.stat.exists
+
+- name: Lire l'identifiant KRaft
+  ansible.builtin.slurp:
+    src: "{{ stack_state_dir }}/kraft_cluster_id"
+  register: kraft_id_content
+
+- name: Publier l'identifiant KRaft
+  ansible.builtin.set_fact:
+    kraft_cluster_id: "{{ kraft_id_content.content | b64decode | trim }}"

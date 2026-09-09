@@ -1,0 +1,19 @@
+[Unit]
+Description=Kafka Exporter {{ kafka_exporter_version }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kafka_exporter
+Group=kafka_exporter
+EnvironmentFile={{ kafka_exporter_config_dir }}/sasl.env
+ExecStart={{ kafka_exporter_install_dir }}/kafka_exporter {% for host in groups['kafka'] | sort %}--kafka.server={{ host }}:{{ kafka_client_port }} {% endfor %}--sasl.enabled --sasl.mechanism=plain --sasl.username=kafka-exporter --web.listen-address=127.0.0.1:{{ kafka_exporter_port }}
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

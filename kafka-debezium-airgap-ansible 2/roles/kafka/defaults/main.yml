@@ -1,0 +1,10 @@
+---
+kafka_service_user: kafka
+kafka_service_group: kafka
+kafka_config_dir: /etc/kafka/kraft
+jmx_exporter_install_dir: /opt/jmx-exporter
+jmx_exporter_version: 1.6.0
+kafka_client_allowed_cidrs: >-
+  {{ (groups['stack'] | map('extract', hostvars, 'ansible_host') |
+      map('regex_replace', '$', '/32') | list) +
+     kafka_additional_client_allowed_cidrs }}

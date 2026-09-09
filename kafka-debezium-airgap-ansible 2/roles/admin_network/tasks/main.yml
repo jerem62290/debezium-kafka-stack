@@ -1,0 +1,47 @@
+---
+- name: Vérifier l'écoute de l'administration sur toutes les adresses IPv4
+  ansible.builtin.assert:
+    that:
+      - ui_bind_address == '0.0.0.0'
+      - connect_rest_bind_address == '0.0.0.0'
+    fail_msg: Cette variante expose les interfaces admin sur 0.0.0.0, sans filtre de source IP.
+
+- name: Déterminer les ports admin de cette VM
+  ansible.builtin.set_fact:
+    admin_network_ports: >-
+      {{ ([grafana_port, akhq_port, prometheus_port, alertmanager_port]
+          if inventory_hostname in groups['monitoring'] else []) +
+         ([connect_rest_port] if inventory_hostname in groups['kafka_connect'] else []) }}
+
+- name: Ouvrir les ports admin sans restriction de source
+  when:
+    - manage_firewalld | bool
+    - admin_network_ports | length > 0
+  block:
+    - name: Lire toutes les zones firewalld permanentes
+      ansible.builtin.command:
+        argv: [firewall-cmd, --permanent, --get-zones]
+      register: admin_network_permanent_zones
+      changed_when: false
+
+    - name: Lire toutes les zones firewalld actives et disponibles
+      ansible.builtin.command:
+        argv: [firewall-cmd, --get-zones]
+      register: admin_network_runtime_zones
+      changed_when: false
+
+    - name: Appliquer les ouvertures permanentes et immédiates
+      ansible.builtin.include_tasks: open-port.yml
+      loop: >-
+        {{ (admin_network_permanent_zones.stdout.split() | product(['permanent'], admin_network_ports) | list) +
+           (admin_network_runtime_zones.stdout.split() | product(['runtime'], admin_network_ports) | list) }}
+      loop_control:
+        loop_var: admin_network_rule
+        label: "{{ admin_network_rule | join('/') }}"
+
+- name: Signaler la gestion du pare-feu hors playbook
+  ansible.builtin.debug:
+    msg: "Pare-feu externe : autoriser toutes les sources vers les ports admin {{ admin_network_ports }} de cette VM."
+  when:
+    - not (manage_firewalld | bool)
+    - admin_network_ports | length > 0

@@ -1,0 +1,39 @@
+---
+- name: Lire l'état des services sans le modifier
+  ansible.builtin.service_facts:
+
+- name: Détecter les anciennes configurations Kafka et Connect
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ kafka_config_dir | default('/etc/kafka/kraft') }}/server.properties"
+    - "{{ connect_config_dir | default('/etc/kafka-connect') }}/connect-distributed.properties"
+  register: protocol_migration_files
+
+- name: Lire uniquement les configurations existantes
+  ansible.builtin.slurp:
+    src: "{{ item.item }}"
+  loop: "{{ protocol_migration_files.results }}"
+  when: item.stat.exists
+  register: protocol_migration_content
+  no_log: true
+
+- name: Initialiser le constat de protocole et d'activité de la VM
+  ansible.builtin.set_fact:
+    protocol_migration_legacy_tls: false
+    protocol_migration_active: >-
+      {{ ansible_facts.services.get('kafka.service', {}).get('state', 'stopped') != 'stopped' or
+         ansible_facts.services.get('kafka-connect.service', {}).get('state', 'stopped') != 'stopped' }}
+
+- name: Détecter une configuration utilisant encore SSL
+  ansible.builtin.set_fact:
+    protocol_migration_legacy_tls: true
+  loop: "{{ protocol_migration_content.results }}"
+  when:
+    - item.content is defined
+    - (item.content | b64decode) is search('(?m)^(listener.security.protocol.map=.*SSL|security.protocol=(SASL_)?SSL)')
+  no_log: true
+
+- name: Contrôler la transition de protocole sur la totalité du cluster
+  ansible.builtin.include_tasks: assert-transition.yml
+  run_once: true

@@ -1,0 +1,24 @@
+{
+  "name": "postgres-exemple",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "database.hostname": "postgres.example.internal",
+    "database.port": "5432",
+    "database.user": "debezium",
+    "database.password": "${file:/etc/kafka-connect/secrets/postgres-exemple.properties:database.password}",
+    "database.dbname": "application",
+    "topic.prefix": "pg.application",
+    "plugin.name": "pgoutput",
+    "slot.name": "debezium_application",
+    "publication.name": "dbz_application",
+    "publication.autocreate.mode": "filtered",
+    "table.include.list": "public.commande,public.client",
+    "snapshot.mode": "initial",
+    "heartbeat.interval.ms": "10000",
+    "tombstones.on.delete": "false",
+    "decimal.handling.mode": "precise",
+    "time.precision.mode": "adaptive_time_microseconds"
+  }
+}
+

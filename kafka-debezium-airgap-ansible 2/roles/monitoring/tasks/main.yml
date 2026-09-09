@@ -1,0 +1,213 @@
+---
+- name: Créer les groupes système d'observabilité
+  ansible.builtin.group:
+    name: "{{ item }}"
+    system: true
+  loop:
+    - prometheus
+    - alertmanager
+    - kafka_exporter
+    - blackbox_exporter
+
+- name: Créer les comptes système d'observabilité
+  ansible.builtin.user:
+    name: "{{ item }}"
+    group: "{{ item }}"
+    system: true
+    shell: /sbin/nologin
+    create_home: false
+  loop:
+    - prometheus
+    - alertmanager
+    - kafka_exporter
+    - blackbox_exporter
+
+- name: Créer les répertoires d'observabilité
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode | default('0750') }}"
+  loop:
+    - {path: "{{ prometheus_install_dir }}", owner: root, group: root, mode: "0755"}
+    - {path: "{{ prometheus_config_dir }}", owner: root, group: prometheus}
+    - {path: /var/lib/prometheus, owner: prometheus, group: prometheus}
+    - {path: "{{ alertmanager_install_dir }}", owner: root, group: root, mode: "0755"}
+    - {path: "{{ alertmanager_config_dir }}", owner: root, group: alertmanager}
+    - {path: /var/lib/alertmanager, owner: alertmanager, group: alertmanager}
+    - {path: "{{ kafka_exporter_install_dir }}", owner: root, group: root, mode: "0755"}
+    - {path: "{{ kafka_exporter_config_dir }}", owner: root, group: kafka_exporter}
+    - {path: "{{ blackbox_exporter_install_dir }}", owner: root, group: root, mode: "0755"}
+    - {path: "{{ blackbox_exporter_config_dir }}", owner: root, group: blackbox_exporter}
+    - {path: "{{ kafka_cli_install_dir }}", owner: root, group: root, mode: "0755"}
+
+- name: Installer les binaires Prometheus
+  ansible.builtin.unarchive:
+    src: "{{ airgap_bundle_dir }}/artifacts/monitoring/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+    dest: "{{ prometheus_install_dir }}"
+    remote_src: false
+    extra_opts: [--strip-components=1]
+    creates: "{{ prometheus_install_dir }}/prometheus"
+  notify: Redémarrer prometheus
+
+- name: Installer les binaires Alertmanager
+  ansible.builtin.unarchive:
+    src: "{{ airgap_bundle_dir }}/artifacts/monitoring/alertmanager-{{ alertmanager_version }}.linux-amd64.tar.gz"
+    dest: "{{ alertmanager_install_dir }}"
+    remote_src: false
+    extra_opts: [--strip-components=1]
+    creates: "{{ alertmanager_install_dir }}/alertmanager"
+  notify: Redémarrer alertmanager
+
+- name: Installer Kafka Exporter
+  ansible.builtin.unarchive:
+    src: "{{ airgap_bundle_dir }}/artifacts/monitoring/kafka_exporter-{{ kafka_exporter_version }}.linux-amd64.tar.gz"
+    dest: "{{ kafka_exporter_install_dir }}"
+    remote_src: false
+    extra_opts: [--strip-components=1]
+    creates: "{{ kafka_exporter_install_dir }}/kafka_exporter"
+  notify: Redémarrer kafka-exporter
+
+- name: Installer Blackbox Exporter
+  ansible.builtin.unarchive:
+    src: "{{ airgap_bundle_dir }}/artifacts/monitoring/blackbox_exporter-{{ blackbox_exporter_version }}.linux-amd64.tar.gz"
+    dest: "{{ blackbox_exporter_install_dir }}"
+    remote_src: false
+    extra_opts: [--strip-components=1]
+    creates: "{{ blackbox_exporter_install_dir }}/blackbox_exporter"
+  notify: Redémarrer blackbox-exporter
+
+- name: Installer les outils CLI Kafka sur la toolbox
+  ansible.builtin.unarchive:
+    src: "{{ airgap_bundle_dir }}/artifacts/kafka/kafka_{{ kafka_scala_version }}-{{ kafka_version }}.tgz"
+    dest: "{{ kafka_cli_install_dir }}"
+    remote_src: false
+    extra_opts: [--strip-components=1]
+    creates: "{{ kafka_cli_install_dir }}/bin/kafka-topics.sh"
+
+- name: Installer le secret SASL Kafka Exporter
+  ansible.builtin.template:
+    src: kafka-exporter-sasl.env.j2
+    dest: "{{ kafka_exporter_config_dir }}/sasl.env"
+    owner: root
+    group: kafka_exporter
+    mode: "0640"
+  no_log: true
+  notify: Redémarrer kafka-exporter
+
+- name: Installer la configuration Kafka CLI réservée à root
+  ansible.builtin.template:
+    src: toolbox-client.properties.j2
+    dest: "{{ kafka_cli_install_dir }}/config/admin-client.properties"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Copier le RPM Grafana depuis le bundle
+  ansible.builtin.copy:
+    src: "{{ airgap_bundle_dir }}/artifacts/monitoring/grafana_13.2.0_32077357341_linux_amd64.rpm"
+    dest: /var/tmp/grafana-13.2.0.x86_64.rpm
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Installer Grafana depuis le RPM local
+  ansible.builtin.dnf:
+    name: /var/tmp/grafana-13.2.0.x86_64.rpm
+    state: present
+    # L'intégrité du RPM est contrôlée par le manifeste SHA-512 du bundle.
+    disable_gpg_check: true
+    disablerepo: "{{ '*' if rhel_internal_repo_ids | length > 0 else omit }}"
+    enablerepo: "{{ rhel_internal_repo_ids if rhel_internal_repo_ids | length > 0 else omit }}"
+
+
+- name: Créer les répertoires de provisioning Grafana
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: grafana
+    group: grafana
+    mode: "0750"
+  loop:
+    - /etc/grafana/provisioning/datasources
+    - /etc/grafana/provisioning/dashboards
+    - /var/lib/grafana/dashboards
+
+- name: Déployer les configurations d'observabilité
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode | default('0640') }}"
+  loop:
+    - {src: prometheus.yml.j2, dest: "{{ prometheus_config_dir }}/prometheus.yml", owner: root, group: prometheus}
+    - {src: alert-rules.yml.j2, dest: "{{ prometheus_config_dir }}/alert-rules.yml", owner: root, group: prometheus}
+    - {src: alertmanager.yml.j2, dest: "{{ alertmanager_config_dir }}/alertmanager.yml", owner: root, group: alertmanager}
+    - {src: blackbox.yml.j2, dest: "{{ blackbox_exporter_config_dir }}/blackbox.yml", owner: root, group: blackbox_exporter}
+    - {src: grafana.ini.j2, dest: /etc/grafana/grafana.ini, owner: root, group: grafana}
+    - {src: grafana-sysconfig.j2, dest: /etc/sysconfig/grafana-server, owner: root, group: root, mode: "0600"}
+    - {src: grafana-datasource.yml.j2, dest: /etc/grafana/provisioning/datasources/prometheus.yml, owner: root, group: grafana}
+    - {src: grafana-dashboard-provider.yml.j2, dest: /etc/grafana/provisioning/dashboards/cdc-stack.yml, owner: root, group: grafana}
+    - {src: cdc-overview.json.j2, dest: /var/lib/grafana/dashboards/cdc-overview.json, owner: root, group: grafana}
+  no_log: true
+  notify:
+    - Redémarrer prometheus
+    - Redémarrer alertmanager
+    - Redémarrer blackbox-exporter
+    - Redémarrer grafana-server
+
+- name: Installer les unités systemd d'observabilité
+  ansible.builtin.template:
+    src: "{{ item }}.service.j2"
+    dest: "/etc/systemd/system/{{ item }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - prometheus
+    - alertmanager
+    - kafka-exporter
+    - blackbox-exporter
+  notify:
+    - Recharger systemd
+    - Redémarrer prometheus
+    - Redémarrer alertmanager
+    - Redémarrer kafka-exporter
+    - Redémarrer blackbox-exporter
+
+- name: Appliquer les handlers d'observabilité
+  ansible.builtin.meta: flush_handlers
+
+- name: Activer les services d'observabilité
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - prometheus
+    - alertmanager
+    - kafka-exporter
+    - blackbox-exporter
+    - grafana-server
+
+- name: Attendre Prometheus
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ prometheus_port }}/-/ready"
+    status_code: 200
+  register: prometheus_ready
+  retries: 24
+  delay: 5
+  until: prometheus_ready.status == 200
+
+- name: Attendre Grafana
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ grafana_port }}/api/health"
+    status_code: 200
+  register: grafana_ready
+  retries: 24
+  delay: 5
+  until: grafana_ready.status == 200
