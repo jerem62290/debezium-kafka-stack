@@ -1,9 +1,0 @@
----
-akhq_version: 0.28.0
-akhq_install_dir: /opt/akhq
-akhq_config_dir: /etc/akhq
-akhq_data_dir: /var/lib/akhq
-akhq_pki_dir: /etc/akhq/pki
-akhq_java_dir: /opt/akhq/java-25
-akhq_jre_archive: OpenJDK25U-jre_x64_linux_hotspot_25.0.4.1_1.tar.gz
-
