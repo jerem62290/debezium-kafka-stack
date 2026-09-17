@@ -1,0 +1,4 @@
+# Administration CLI locale : même principal que la connexion d'administration AKHQ.
+security.protocol=SASL_PLAINTEXT
+sasl.mechanism=PLAIN
+sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="akhq" password="{{ hostvars['localhost'].kafka_sasl_passwords['akhq'] }}";

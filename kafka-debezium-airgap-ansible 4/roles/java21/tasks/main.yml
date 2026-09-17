@@ -1,0 +1,24 @@
+---
+- name: Installer Java 21 depuis le dépôt RHEL interne
+  ansible.builtin.dnf:
+    name: java-21-openjdk-headless
+    state: present
+    update_cache: false
+    disablerepo: "{{ '*' if rhel_internal_repo_ids | length > 0 else omit }}"
+    enablerepo: "{{ rhel_internal_repo_ids if rhel_internal_repo_ids | length > 0 else omit }}"
+
+- name: Détecter Java 21
+  ansible.builtin.shell: |
+    set -o errexit -o nounset -o pipefail
+    {{ java21_home }}/bin/java -version 2>&1 | head -n 1
+  args:
+    executable: /bin/bash
+  register: java_version_output
+  changed_when: false
+
+- name: Vérifier la version Java active
+  ansible.builtin.assert:
+    that:
+      - java_version_output.stdout is search('version "21[.]')
+    fail_msg: >-
+      Kafka et Connect exigent Java 21. Runtime détecté : {{ java_version_output.stdout }}.

@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Simulateur strict réservé à firewall-smoke.yml ; ne touche jamais le pare-feu."""
+import json
+import os
+import sys
+from pathlib import Path
+
+state_path = Path(os.environ['CDC_FIREWALL_TEST_STATE'])
+args = sys.argv[1:]
+permanent = '--permanent' in args
+if '--get-zones' in args:
+    print('public internal' if permanent else 'public internal runtime-only')
+    sys.exit(0)
+assert all(a == '--permanent' or a.startswith(('--zone=', '--query-port=', '--add-port=')) for a in args), args
+zone = next(a.split('=', 1)[1] for a in args if a.startswith('--zone='))
+action = next(a for a in args if a.startswith(('--query-port=', '--add-port=')))
+port = action.split('=', 1)[1]
+key = f'{zone}/{"permanent" if permanent else "runtime"}/{port}'
+state = json.loads(state_path.read_text()) if state_path.exists() else []
+if action.startswith('--query-port='):
+    sys.exit(0 if key in state else 1)
+assert key not in state, 'Ouverture répétée non idempotente'
+state.append(key)
+state_path.write_text(json.dumps(sorted(state)))
+print('success')

@@ -1,0 +1,85 @@
+---
+- name: Valider les chemins absolus Kafka
+  ansible.builtin.assert:
+    that:
+      - item is match('^/[A-Za-z0-9_./-]+$')
+      - not item.endswith('/')
+      - "'..' not in item.split('/')"
+      - "'.' not in item.split('/')"
+      - "'//' not in item"
+    fail_msg: Les chemins Kafka doivent être absolus et normalisés, sans espace ni composant relatif.
+  loop: "{{ [kafka_install_dir, kafka_data_dir, kafka_metadata_dir, kafka_config_dir, kafka_log_dir] }}"
+
+- name: Refuser des répertoires Kafka confondus ou imbriqués
+  ansible.builtin.assert:
+    that:
+      - not item.0.startswith(item.1 ~ '/')
+  loop: "{{ kafka_layout_paths | product(kafka_layout_paths) | list }}"
+  when: item.0 != item.1
+  vars:
+    kafka_layout_paths: "{{ [kafka_install_dir, kafka_data_dir, kafka_metadata_dir, kafka_config_dir, kafka_log_dir] }}"
+
+- name: Valider les identités et l'unicité des chemins
+  ansible.builtin.assert:
+    that:
+      - kafka_service_user is match('^[a-z_][a-z0-9_-]*$')
+      - kafka_service_group is match('^[a-z_][a-z0-9_-]*$')
+      - kafka_layout_paths | unique | length == 5
+  vars:
+    kafka_layout_paths: "{{ [kafka_install_dir, kafka_data_dir, kafka_metadata_dir, kafka_config_dir, kafka_log_dir] }}"
+
+- name: Lire l'état du service Kafka
+  ansible.builtin.service_facts:
+
+- name: Détecter l'unité Kafka existante
+  ansible.builtin.stat:
+    path: "{{ kafka_layout_unit_file }}"
+  register: kafka_layout_unit
+
+- name: Lire l'unité existante
+  ansible.builtin.slurp:
+    src: "{{ kafka_layout_unit_file }}"
+  when: kafka_layout_unit.stat.exists
+  register: kafka_layout_unit_content
+
+- name: Détecter un changement de chemins ou d'identité
+  ansible.builtin.set_fact:
+    kafka_layout_changed: >-
+      {{ kafka_layout_unit.stat.exists and
+         (('User=' ~ kafka_service_user) not in kafka_layout_unit_lines or
+          ('Group=' ~ kafka_service_group) not in kafka_layout_unit_lines or
+          ('ExecStart=' ~ kafka_install_dir ~ '/bin/kafka-server-start.sh ' ~ kafka_config_dir ~ '/server.properties') not in kafka_layout_unit_lines or
+          ('ReadWritePaths=' ~ kafka_data_dir ~ ' ' ~ kafka_metadata_dir ~ ' ' ~ kafka_log_dir) not in kafka_layout_unit_lines) }}
+  vars:
+    kafka_layout_unit_lines: "{{ (kafka_layout_unit_content.content | default('') | b64decode).splitlines() }}"
+
+- name: Refuser de déplacer les chemins ou changer le compte d'un broker actif
+  ansible.builtin.assert:
+    that:
+      - not (kafka_layout_changed | bool) or ansible_facts.services.get('kafka.service', {}).get('state', 'stopped') == 'stopped'
+    fail_msg: >-
+      Le broker tourne avec d'autres chemins ou un autre compte. Arrêtez Kafka et préparez
+      le transfert des données et les propriétaires avant de relancer. Voir docs/kafka-layout-selinux.md.
+
+- name: Détecter les métadonnées nouvelles et les anciens emplacements connus
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ kafka_metadata_dir }}/meta.properties"
+    - "{{ kafka_data_dir }}/meta.properties"
+    - "{{ kafka_previous_metadata_dir }}/meta.properties"
+    - "{{ kafka_previous_data_dir }}/meta.properties"
+  register: kafka_layout_meta
+
+- name: Refuser un stockage partiellement transféré ou un nouveau formatage lors d'une migration
+  ansible.builtin.assert:
+    that:
+      - kafka_layout_meta.results[0].stat.exists == kafka_layout_meta.results[1].stat.exists
+      - >-
+        (not (kafka_layout_changed | bool) and
+         not kafka_layout_meta.results[2].stat.exists and not kafka_layout_meta.results[3].stat.exists) or
+        (kafka_layout_meta.results[0].stat.exists and kafka_layout_meta.results[1].stat.exists)
+    fail_msg: >-
+      Une ancienne installation ou un transfert partiel a été détecté. Le playbook ne déplace
+      pas les données et ne crée pas un stockage neuf à leur place. Préservez les deux arborescences,
+      meta.properties, le node.id et .state/kraft_cluster_id. Voir docs/kafka-layout-selinux.md.

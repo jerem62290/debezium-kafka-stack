@@ -1,0 +1,19 @@
+---
+- name: Vérifier si le port admin est déjà ouvert dans la zone
+  ansible.builtin.command:
+    argv: >-
+      {{ ['firewall-cmd', '--zone=' ~ admin_network_rule.0] +
+         (['--permanent'] if admin_network_rule.1 == 'permanent' else []) +
+         ['--query-port=' ~ (admin_network_rule.2 | string) ~ '/tcp'] }}
+  register: admin_network_port_query
+  changed_when: false
+  failed_when: admin_network_port_query.rc not in [0, 1]
+
+- name: Ouvrir le port admin à toutes les sources dans la zone
+  ansible.builtin.command:
+    argv: >-
+      {{ ['firewall-cmd', '--zone=' ~ admin_network_rule.0] +
+         (['--permanent'] if admin_network_rule.1 == 'permanent' else []) +
+         ['--add-port=' ~ (admin_network_rule.2 | string) ~ '/tcp'] }}
+  when: admin_network_port_query.rc == 1
+  changed_when: true

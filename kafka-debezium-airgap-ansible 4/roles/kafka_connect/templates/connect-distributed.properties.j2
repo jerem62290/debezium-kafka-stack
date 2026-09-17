@@ -1,0 +1,36 @@
+# Géré par Ansible — worker distribué Debezium {{ debezium_version }}.
+bootstrap.servers={% for host in groups['kafka'] | sort %}{{ host }}:{{ kafka_client_port }}{% if not loop.last %},{% endif %}{% endfor %}
+
+group.id={{ connect_group_id }}
+
+# Worker, producteurs de source, consommateurs et clients admin utilisent SASL.
+{% for prefix in ['', 'producer.', 'consumer.', 'admin.'] %}
+{{ prefix }}security.protocol=SASL_PLAINTEXT
+{{ prefix }}sasl.mechanism=PLAIN
+{{ prefix }}sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="{{ inventory_hostname }}" password="{{ hostvars['localhost'].kafka_sasl_passwords[inventory_hostname] }}";
+{% endfor %}
+
+key.converter=org.apache.kafka.connect.json.JsonConverter
+key.converter.schemas.enable={{ connect_json_schemas_enable | lower }}
+value.converter=org.apache.kafka.connect.json.JsonConverter
+value.converter.schemas.enable={{ connect_json_schemas_enable | lower }}
+header.converter=org.apache.kafka.connect.storage.SimpleHeaderConverter
+
+config.storage.topic={{ connect_config_topic }}
+config.storage.replication.factor=3
+offset.storage.topic={{ connect_offset_topic }}
+offset.storage.replication.factor=3
+offset.storage.partitions=25
+status.storage.topic={{ connect_status_topic }}
+status.storage.replication.factor=3
+status.storage.partitions=5
+
+offset.flush.interval.ms=10000
+plugin.path={{ connect_plugin_dir }}/postgres,{{ connect_plugin_dir }}/oracle
+connector.client.config.override.policy=All
+config.providers=file
+config.providers.file.class=org.apache.kafka.common.config.provider.FileConfigProvider
+
+listeners=http://{{ connect_rest_bind_address }}:{{ connect_rest_port }}
+rest.advertised.host.name={{ inventory_hostname }}
+rest.advertised.port={{ connect_rest_port }}

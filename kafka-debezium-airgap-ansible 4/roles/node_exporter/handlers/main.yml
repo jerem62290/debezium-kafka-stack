@@ -1,0 +1,14 @@
+---
+- name: Recharger systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Redémarrer node_exporter
+  ansible.builtin.systemd:
+    name: node_exporter
+    state: restarted
+
+- name: Recharger firewalld
+  ansible.builtin.command: firewall-cmd --reload
+  changed_when: true
+

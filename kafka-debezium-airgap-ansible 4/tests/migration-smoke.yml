@@ -1,0 +1,54 @@
+---
+- name: Initialiser un état de cluster simulé sans toucher aux services
+  hosts: stack
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Définir une installation neuve fictive
+      ansible.builtin.set_fact:
+        protocol_migration_legacy_tls: false
+        protocol_migration_active: false
+
+- name: Tester les décisions de migration sans modifier les VM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Accepter une installation neuve
+      ansible.builtin.include_role:
+        name: protocol_migration_guard
+        tasks_from: assert-transition.yml
+    - name: Simuler un ancien broker TLS actif
+      ansible.builtin.set_fact:
+        protocol_migration_legacy_tls: true
+        protocol_migration_active: true
+      delegate_to: "{{ groups['kafka'][0] }}"
+      delegate_facts: true
+    - name: Initialiser le résultat du test de refus
+      ansible.builtin.set_fact:
+        migration_test_blocked: false
+    - name: Attendre un refus de conversion à chaud
+      block:
+        - name: Exercer le garde de migration
+          ansible.builtin.include_role:
+            name: protocol_migration_guard
+            tasks_from: assert-transition.yml
+      rescue:
+        - name: Constater le refus attendu
+          ansible.builtin.set_fact:
+            migration_test_blocked: true
+    - name: Vérifier que la conversion à chaud a été bloquée
+      ansible.builtin.assert:
+        that:
+          - migration_test_blocked | bool
+    - name: Simuler l'arrêt du dernier broker TLS
+      ansible.builtin.set_fact:
+        protocol_migration_active: false
+      delegate_to: "{{ groups['kafka'][0] }}"
+      delegate_facts: true
+    - name: Accepter la migration lorsque tout est arrêté
+      ansible.builtin.include_role:
+        name: protocol_migration_guard
+        tasks_from: assert-transition.yml

@@ -1,0 +1,44 @@
+---
+micronaut:
+  application:
+    name: akhq
+  security:
+    enabled: true
+    token:
+      jwt:
+        signatures:
+          secret:
+            generator:
+              secret: "{{ hostvars['localhost'].akhq_jwt_secret }}"
+  server:
+    host: "{{ ui_bind_address }}"
+    port: {{ akhq_port }}
+    context-path: "{{ akhq_context_path }}"
+
+akhq:
+  connections:
+    cdc-kafka:
+      properties:
+        bootstrap.servers: "{% for host in groups['kafka'] | sort %}{{ host }}:{{ kafka_client_port }}{% if not loop.last %},{% endif %}{% endfor %}"
+        security.protocol: SASL_PLAINTEXT
+        sasl.mechanism: PLAIN
+        sasl.jaas.config: >-
+          org.apache.kafka.common.security.plain.PlainLoginModule required username="akhq" password="{{ hostvars['localhost'].kafka_sasl_passwords['akhq'] }}";
+      connect:
+{% for host in groups['kafka_connect'] | sort %}
+        - name: "{{ host }}"
+          url: "http://{{ host }}:{{ connect_rest_port }}"
+{% endfor %}
+  security:
+    default-group: no-roles
+    basic-auth:
+      - username: "{{ akhq_admin_user }}"
+        password: "{{ hostvars['localhost'].akhq_admin_password | hash('sha256') }}"
+        passwordHash: SHA256
+        groups:
+          - admin
+      - username: "{{ akhq_reader_user }}"
+        password: "{{ hostvars['localhost'].akhq_reader_password | hash('sha256') }}"
+        passwordHash: SHA256
+        groups:
+          - reader

@@ -1,0 +1,83 @@
+---
+- name: Vérifier la présence de SELinux avant de gérer les contextes
+  ansible.builtin.assert:
+    that:
+      - ansible_selinux is defined
+      - ansible_selinux.status == 'enabled'
+      - required_selinux_mode != 'enforcing' or ansible_selinux.mode == 'enforcing'
+    fail_msg: SELinux doit être actif ; cette adaptation ne désactive pas le mode enforcing.
+
+- name: Installer semanage et les outils SELinux depuis les dépôts RHEL internes
+  ansible.builtin.dnf:
+    name: "{{ kafka_selinux_packages }}"
+    state: present
+    disablerepo: "{{ '*' if rhel_internal_repo_ids | length > 0 else omit }}"
+    enablerepo: "{{ rhel_internal_repo_ids if rhel_internal_repo_ids | length > 0 else omit }}"
+
+- name: Déployer le script Bash de gestion des contextes sans collection Galaxy
+  ansible.builtin.copy:
+    src: ensure-fcontexts.sh
+    dest: "{{ kafka_config_dir }}/ensure-fcontexts.sh"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Supprimer l'ancien script Python personnalisé de gestion SELinux
+  ansible.builtin.file:
+    path: "{{ kafka_config_dir }}/ensure-fcontexts.py"
+    state: absent
+
+- name: Déclarer les contextes persistants des répertoires Kafka
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - "{{ kafka_config_dir }}/ensure-fcontexts.sh"
+      - "{{ kafka_install_dir }}"
+      - "{{ kafka_config_dir }}"
+      - "{{ kafka_data_dir }}"
+      - "{{ kafka_metadata_dir }}"
+      - "{{ kafka_log_dir }}"
+      - "{{ kafka_selinux_install_type }}"
+      - "{{ kafka_selinux_exec_type }}"
+      - "{{ kafka_selinux_config_type }}"
+      - "{{ kafka_selinux_data_type }}"
+      - "{{ kafka_selinux_log_type }}"
+      - "{{ kafka_selinux_fix_unlabeled_parents | bool | ternary('true', 'false') }}"
+  register: kafka_selinux_mapping
+  changed_when: "'CHANGED=1' in kafka_selinux_mapping.stdout_lines"
+
+- name: Lire les chemins vérifiés renvoyés par le script Bash
+  ansible.builtin.set_fact:
+    kafka_selinux_parents: "{{ kafka_selinux_mapping.stdout_lines | select('match', '^PARENT=') | map('regex_replace', '^PARENT=', '') | list }}"
+    kafka_selinux_roots: "{{ kafka_selinux_mapping.stdout_lines | select('match', '^ROOT=') | map('regex_replace', '^ROOT=', '') | list }}"
+
+- name: Restaurer les contextes des parents sans récursion
+  ansible.builtin.command:
+    argv: "{{ ['restorecon', '-v', '--'] + kafka_selinux_parents }}"
+  register: kafka_selinux_parents_restore
+  changed_when: kafka_selinux_parents_restore.stdout | trim | length > 0
+  when: kafka_selinux_parents | length > 0
+
+- name: Restaurer les contextes dans les seuls répertoires Kafka
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - -R
+      - -v
+      - --
+      - "{{ item }}"
+  loop: "{{ kafka_selinux_roots }}"
+  register: kafka_selinux_restore
+  changed_when: kafka_selinux_restore.stdout | trim | length > 0
+
+- name: Vérifier les labels effectifs des chemins nécessaires au service
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - -V
+      - "{{ item }}"
+  loop: >-
+    {{ kafka_selinux_roots + kafka_selinux_parents +
+       [kafka_install_dir ~ '/bin/kafka-server-start.sh',
+        kafka_install_dir ~ '/bin/kafka-storage.sh', kafka_config_dir ~ '/server.properties'] }}
+  changed_when: false

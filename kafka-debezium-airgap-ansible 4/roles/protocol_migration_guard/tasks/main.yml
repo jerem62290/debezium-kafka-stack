@@ -1,0 +1,56 @@
+---
+- name: Lire l'état des services sans le modifier
+  ansible.builtin.service_facts:
+
+- name: Repérer l'unité Kafka pour distinguer la configuration active d'une archive
+  ansible.builtin.stat:
+    path: /etc/systemd/system/kafka.service
+  register: protocol_migration_unit_file
+
+- name: Lire l'unité Kafka si elle existe
+  ansible.builtin.slurp:
+    src: /etc/systemd/system/kafka.service
+  register: protocol_migration_unit
+  when: protocol_migration_unit_file.stat.exists
+
+- name: Détecter les anciennes configurations Kafka et Connect
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ kafka_config_dir }}/server.properties"
+    # Ancien emplacement : conserver la détection TLS pendant une migration de chemins.
+    - /etc/kafka/kraft/server.properties
+    - "{{ connect_config_dir | default('/etc/kafka-connect') }}/connect-distributed.properties"
+  register: protocol_migration_files
+
+- name: Lire uniquement les configurations existantes
+  ansible.builtin.slurp:
+    src: "{{ item.item }}"
+  loop: "{{ protocol_migration_files.results }}"
+  when:
+    - item.stat.exists
+    - >-
+      item.item != '/etc/kafka/kraft/server.properties' or kafka_config_dir == '/etc/kafka/kraft' or
+      (kafka_config_dir ~ '/server.properties') not in (protocol_migration_unit.content | default('') | b64decode)
+  register: protocol_migration_content
+  no_log: true
+
+- name: Initialiser le constat de protocole et d'activité de la VM
+  ansible.builtin.set_fact:
+    protocol_migration_legacy_tls: false
+    protocol_migration_active: >-
+      {{ ansible_facts.services.get('kafka.service', {}).get('state', 'stopped') != 'stopped' or
+         ansible_facts.services.get('kafka-connect.service', {}).get('state', 'stopped') != 'stopped' }}
+
+- name: Détecter une configuration utilisant encore SSL
+  ansible.builtin.set_fact:
+    protocol_migration_legacy_tls: true
+  loop: "{{ protocol_migration_content.results }}"
+  when:
+    - item.content is defined
+    - (item.content | b64decode) is search('(?m)^(listener.security.protocol.map=.*SSL|security.protocol=(SASL_)?SSL)')
+  no_log: true
+
+- name: Contrôler la transition de protocole sur la totalité du cluster
+  ansible.builtin.include_tasks: assert-transition.yml
+  run_once: true

@@ -1,0 +1,23 @@
+---
+- name: Initialiser le bilan global avant toute modification des VM
+  ansible.builtin.set_fact:
+    protocol_migration_tls_hosts: []
+    protocol_migration_active_hosts: []
+  run_once: true
+
+- name: Recenser les VM TLS et les services encore actifs
+  ansible.builtin.set_fact:
+    protocol_migration_tls_hosts: "{{ protocol_migration_tls_hosts + ([item] if hostvars[item].protocol_migration_legacy_tls | bool else []) }}"
+    protocol_migration_active_hosts: "{{ protocol_migration_active_hosts + ([item] if hostvars[item].protocol_migration_active | bool else []) }}"
+  loop: "{{ groups['stack'] }}"
+  run_once: true
+
+- name: Refuser une conversion TLS vers SASL_PLAINTEXT à chaud
+  ansible.builtin.assert:
+    that:
+      - protocol_migration_tls_hosts | length == 0 or protocol_migration_active_hosts | length == 0
+    fail_msg: >-
+      Migration TLS détectée sur {{ protocol_migration_tls_hosts }} ; services encore actifs sur
+      {{ protocol_migration_active_hosts }}. Planifiez un arrêt complet de Kafka Connect et Kafka,
+      conservez .state et les données, puis relancez site.yml. Voir docs/migration-no-pki.md.
+  run_once: true

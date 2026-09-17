@@ -1,0 +1,5 @@
+---
+- name: Recharger sysctl
+  ansible.builtin.command: /usr/sbin/sysctl --system
+  changed_when: true
+

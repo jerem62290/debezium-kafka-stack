@@ -1,0 +1,6 @@
+---
+kafka_connect_user: kafka-connect
+kafka_connect_group: kafka-connect
+connect_config_dir: /etc/kafka-connect
+jmx_exporter_version: 1.6.0
+jmx_exporter_install_dir: /opt/jmx-exporter

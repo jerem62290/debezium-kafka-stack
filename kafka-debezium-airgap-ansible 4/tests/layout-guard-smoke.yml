@@ -1,0 +1,66 @@
+---
+- name: Tester le garde de déplacement sur des fichiers temporaires
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Créer le répertoire de simulation
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: cdc-layout-
+      register: layout_test_root
+    - name: Utiliser uniquement des chemins de test
+      ansible.builtin.set_fact:
+        kafka_install_dir: "{{ layout_test_root.path }}/install"
+        kafka_data_dir: "{{ layout_test_root.path }}/data"
+        kafka_metadata_dir: "{{ layout_test_root.path }}/metadata"
+        kafka_config_dir: "{{ layout_test_root.path }}/config"
+        kafka_log_dir: "{{ layout_test_root.path }}/log"
+        kafka_layout_unit_file: "{{ layout_test_root.path }}/kafka.service"
+        kafka_previous_data_dir: "{{ layout_test_root.path }}/old-data"
+        kafka_previous_metadata_dir: "{{ layout_test_root.path }}/old-metadata"
+    - name: Accepter une installation neuve
+      ansible.builtin.include_role:
+        name: kafka_layout_guard
+    - name: Simuler une ancienne unité sans modifier systemd
+      ansible.builtin.copy:
+        dest: "{{ kafka_layout_unit_file }}"
+        mode: "0600"
+        content: |
+          [Service]
+          User=kafka
+          Group=kafka
+          ExecStart=/opt/kafka/bin/kafka-server-start.sh /etc/kafka/kraft/server.properties
+    - name: Initialiser le résultat du contrôle de migration
+      ansible.builtin.set_fact:
+        layout_test_blocked: false
+    - name: Vérifier le refus d'une destination sans données
+      block:
+        - name: Tester une migration non préparée
+          ansible.builtin.include_role:
+            name: kafka_layout_guard
+      rescue:
+        - name: Constater le refus attendu
+          ansible.builtin.set_fact:
+            layout_test_blocked: true
+    - name: Confirmer le refus d'un formatage de remplacement
+      ansible.builtin.assert:
+        that: [layout_test_blocked]
+    - name: Préparer les dossiers de données simulés
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop: "{{ [kafka_data_dir, kafka_metadata_dir] }}"
+    - name: Simuler la présence des deux fichiers meta.properties
+      ansible.builtin.copy:
+        dest: "{{ item }}/meta.properties"
+        mode: "0600"
+        content: |
+          cluster.id=TestClusterOnly
+          node.id=1
+      loop: "{{ [kafka_data_dir, kafka_metadata_dir] }}"
+    - name: Accepter une migration préparée à froid
+      ansible.builtin.include_role:
+        name: kafka_layout_guard

@@ -1,0 +1,38 @@
+---
+groups:
+  - name: cdc-stack-availability
+    rules:
+      - alert: ExporterIndisponible
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Cible indisponible : {% raw %}{{ $labels.job }} / {{ $labels.instance }}{% endraw %}"
+
+      - alert: KafkaPartitionHorsLigne
+        expr: kafka_server_replicamanager_offlinepartitionscount > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kafka a des partitions hors ligne"
+
+      - alert: KafkaConsumerLagEleve
+        expr: kafka_consumergroup_lag > 100000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Retard consommateur élevé pour {% raw %}{{ $labels.consumergroup }}{% endraw %}"
+
+      - alert: EspaceDisqueFaible
+        expr: >-
+          100 * (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
+          / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disque utilisé à plus de 85 % sur {% raw %}{{ $labels.instance }}{% endraw %}"
+

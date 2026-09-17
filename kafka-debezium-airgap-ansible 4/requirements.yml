@@ -1,0 +1,5 @@
+---
+# Le projet n'utilise que ansible-core. Aucun téléchargement de collection n'est
+# nécessaire sur le contrôleur hors-ligne.
+collections: []
+
