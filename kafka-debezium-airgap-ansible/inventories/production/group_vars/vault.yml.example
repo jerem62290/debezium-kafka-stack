@@ -1,9 +1,0 @@
----
-# Facultatif : si vous ne voulez pas les secrets générés automatiquement dans .state/secrets,
-# chiffrez ce fichier avec ansible-vault et définissez les variables suivantes.
-# kafka_keystore_password_override: "..."
-# kafka_truststore_password_override: "..."
-# grafana_admin_password_override: "..."
-# akhq_admin_password_override: "..."
-# akhq_reader_password_override: "..."
-
